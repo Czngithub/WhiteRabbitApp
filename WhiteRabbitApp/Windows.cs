@@ -8,6 +8,7 @@ namespace WhiteRabbit_Windows
     using SharpDX.Direct3D12;
     using SharpDX.Windows;
     using SharpDX;
+    using WhiteRabbitApp_Vertex;
 
     //创建窗口
     public class Windows : IDisposable
@@ -24,12 +25,15 @@ namespace WhiteRabbit_Windows
         //管道（渲染流水线）对象
         private Device device;       //设备
         private SwapChain3 swapChain;//交换链
-        private Resource[] renderTargets = new Resource[FrameCount];//渲染目标视图
+        private readonly Resource[] renderTargets = new Resource[FrameCount];//渲染目标视图
         private CommandAllocator commandAllocator;  //命令分配器
+        private CommandAllocator bundleAllocator;
         private CommandQueue commandQueue;          //命令队列
         private DescriptorHeap renderTargetViewHeap;//描述符堆
         private GraphicsCommandList commandList;    //命令列表
-        private int rtvDescriptorSize;
+        private GraphicsCommandList bundle;
+        private PipelineState pipelineState;    //管道状态
+        private int rtvDescriptorSize;  //管道
         private RootSignature rootSignature;    //根签名
         
 
@@ -45,17 +49,9 @@ namespace WhiteRabbit_Windows
         Resource vertexBuffer;  //顶点缓冲区
         VertexBufferView vertexBufferView;  //顶点缓冲区视图
 
-        public Windows()
-        {
-            
-        }
-
         //初始化管道（渲染流水线）
         public void Initialize(RenderForm form)
         {
-            width = form.ClientSize.Width;
-            height = form.ClientSize.Height;
-
             LoadPipeline(form);
             LoadAssets();
         }
@@ -65,7 +61,16 @@ namespace WhiteRabbit_Windows
         {
             int width = form.ClientSize.Width;
             int height = form.ClientSize.Height;
-            
+
+            //创建视口
+            viewPort.Width = width;
+            viewPort.Height = height;
+            viewPort.MaxDepth = 1.0f;
+
+            //创建裁剪矩形
+            scissorRectangle.Width = width;
+            scissorRectangle.Bottom = height;
+
 #if DEBUG
             //启用调试层
             {
@@ -104,7 +109,7 @@ namespace WhiteRabbit_Windows
             }
 
             //创建描述符堆
-            //描述并创建一个呈现目标视图（RTV）的描述符堆
+            //描述并创建一个渲染目标视图（RTV）的描述符堆
             DescriptorHeapDescription rtvHeapDesc = new DescriptorHeapDescription()
             {
                 DescriptorCount = FrameCount,       //堆中的描述符数
@@ -133,6 +138,7 @@ namespace WhiteRabbit_Windows
 
             //创建命令分配器对象
             commandAllocator = device.CreateCommandAllocator(CommandListType.Direct);
+            bundleAllocator = device.CreateCommandAllocator(CommandListType.Bundle);
         }
 
         //创建资源
@@ -145,19 +151,19 @@ namespace WhiteRabbit_Windows
 
             //创建流水线状态，负责编译和加载着色器
 #if DEBUG
-            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile());
+            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VSMain", "vs_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
 #else
-            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile());
+            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VSMain", "vs_5_0"));
 #endif
 
 #if DEBUG
-            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile());
+            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PSMain", "ps_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
 #else
-            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile());
+            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PSMain", "ps_5_0"));
 #endif
 
-            //定义顶点输入布局
-            var inputElementDescs = new[]
+            //描述输入装配器阶段的输入元素，这里定义顶点输入布局
+            var inputElementDescs = new []
             {
                 new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
                 new InputElement("COLOR", 0, Format.R32G32B32A32_Float, 12, 0) 
@@ -166,10 +172,10 @@ namespace WhiteRabbit_Windows
             //描述和创建流水线状态对象（PSO）
             var psoDesc = new GraphicsPipelineStateDescription()
             {
-                InputLayout = new InputLayoutDescription(inputElementDescs),
-                RootSignature = rootSignature,
-                VertexShader = vertexShader,
-                PixelShader = pixelShader,
+                InputLayout = new InputLayoutDescription(inputElementDescs),    //描述输入缓冲器
+                RootSignature = rootSignature,  //根签名
+                VertexShader = vertexShader,    //顶点着色器
+                PixelShader = pixelShader,  //像素着色器
                 RasterizerState = RasterizerStateDescription.Default(), //描述光栅器状态
                 BlendState = BlendStateDescription.Default(),   //描述混合状态
                 DepthStencilFormat = SharpDX.DXGI.Format.D32_Float, //描述深度/模板格式（纹理资源）
@@ -178,24 +184,76 @@ namespace WhiteRabbit_Windows
                     IsDepthEnabled = false, //不启用深度测试
                     IsStencilEnabled = false    //不启用模板测试
                 },
-                SampleMask = int.MaxValue,
-
+                SampleMask = int.MaxValue,  //混合状态的样本掩码
+                PrimitiveTopologyType = PrimitiveTopologyType.Triangle, //定义该管道的几何或外壳着色器的输入类型，这里是三角
+                RenderTargetCount = 1,  //RTVFormat成员中的渲染目标格式数
+                Flags = PipelineStateFlags.None,    //用于控制管道状态的标志，这里表示没有标志
+                SampleDescription = new SampleDescription(1, 0),   //描述资源的多采样参数
+                StreamOutput = new StreamOutputDescription()    //描述输出缓冲器
             };
+            psoDesc.RenderTargetFormats[0] = Format.R8G8B8A8_UNorm; //描述渲染目标格式的数组
+
+            //设置管道
+            pipelineState = device.CreateGraphicsPipelineState(psoDesc);
 
             //创建命令列表
             commandList = device.CreateCommandList(
                 CommandListType.Direct, //指定命令列表的创建类型，Direct命令列表不会继承任何GPU状态
                 commandAllocator,       //指向设备创建的命令列表对象的指针
-                null);                  //指向内存块的指针
+                pipelineState);         //指向(管道)内存块的指针
 
-            //创建视口
-            viewPort = new ViewportF(0, 0, width, height);
-
-            //创建裁剪矩形
-            scissorRectangle = new Rectangle(0, 0, width, height);
-            
-            //命令列表是在写入状态下被创建的，但还没有还写入的内容，主循环希望它被关闭，所以现在就关闭它
             commandList.Close();
+
+            //创建顶点缓冲区
+            float aspectRatio = viewPort.Width / viewPort.Height;
+
+            //定义三角形的几何形状
+            var triangleVertices = new []
+            {
+                new Vertex.Vertex1() {Position = new Vector3(0.0f, 0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector3(0.25f, -0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector3(-0.25f, -0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
+            };
+
+            //使用上传堆来传递垂直缓冲区的数据
+            /*--------------------------------------------------*
+             * 不推荐使用上传堆来传递像垂直缓冲区这样的静态数据 *
+             * 这里使用上载堆是为了代码的简洁性，并且还因为需要 *
+             * 传递的资源很少                                   *
+             *--------------------------------------------------*/
+            int vertexBufferSize = Utilities.SizeOf(triangleVertices);
+            vertexBuffer = device.CreateCommittedResource(
+                new HeapProperties(HeapType.Upload),
+                HeapFlags.None,
+                ResourceDescription.Buffer(vertexBufferSize),
+                ResourceStates.GenericRead);
+
+            //将三角形的数据复制到顶点缓冲区
+            IntPtr pVertexDataBegin = vertexBuffer.Map(0);
+            Utilities.Write(
+                pVertexDataBegin,
+                triangleVertices,
+                0,
+                triangleVertices.Length);
+            vertexBuffer.Unmap(0);
+
+            //初始化顶点缓冲区视图
+            vertexBufferView = new VertexBufferView();
+            vertexBufferView.BufferLocation = vertexBuffer.GPUVirtualAddress;
+            vertexBufferView.StrideInBytes = Utilities.SizeOf<Vertex.Vertex1>();
+            vertexBufferView.SizeInBytes = vertexBufferSize;
+            
+            //创建bundle
+            bundle = device.CreateCommandList(
+                0, 
+                CommandListType.Bundle, 
+                bundleAllocator,
+                pipelineState);
+            bundle.SetGraphicsRootSignature(rootSignature);
+            bundle.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
+            bundle.SetVertexBuffer(0, vertexBufferView);
+            bundle.DrawInstanced(3, 1, 0, 0);
+            bundle.Close();
 
             //创建同步对象
             //创建围栏
@@ -215,9 +273,10 @@ namespace WhiteRabbit_Windows
             commandAllocator.Reset();
 
             //但是当在特定的命令列表上调用ExecuteCommandList()时，可以随时重置该命令列表，并且必须在此之前重新写入
-            commandList.Reset(commandAllocator, null);
+            commandList.Reset(commandAllocator, pipelineState);
 
-            //设置视口与裁剪矩形
+            //设置根签名布局、视口和裁剪矩形
+            commandList.SetGraphicsRootSignature(rootSignature);
             commandList.SetViewport(viewPort);
             commandList.SetScissorRectangles(scissorRectangle);
 
@@ -230,8 +289,13 @@ namespace WhiteRabbit_Windows
             CpuDescriptorHandle rtvHandle = renderTargetViewHeap.CPUDescriptorHandleForHeapStart;
             rtvHandle += frameIndex * rtvDescriptorSize;
 
+            //为渲染目标和深度模板设置CPU描述符句柄
+            commandList.SetRenderTargets(rtvHandle, null);
+
             //写入命令
-            commandList.ClearRenderTargetView(rtvHandle, new Color4(0, 0, 0, 1), 0, null);
+            commandList.ClearRenderTargetView(rtvHandle, new Color4(1.0f, 1.0f, 1.0f, 1.0f), 0, null);
+
+            commandList.ExecuteBundle(bundle);
 
             //使用返回缓冲区
             commandList.ResourceBarrierTransition(
@@ -297,9 +361,14 @@ namespace WhiteRabbit_Windows
                 target.Dispose();
             }
             commandAllocator.Dispose();
+            bundleAllocator.Dispose();
             commandQueue.Dispose();
+            rootSignature.Dispose();
+            pipelineState.Dispose();
+            vertexBuffer.Dispose();
             renderTargetViewHeap.Dispose();
             commandList.Dispose();
+            bundle.Dispose();
             fence.Dispose();
             swapChain.Dispose();
             device.Dispose();
