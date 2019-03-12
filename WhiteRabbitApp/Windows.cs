@@ -9,6 +9,7 @@ namespace WhiteRabbit_Windows
     using SharpDX.Windows;
     using SharpDX;
     using WhiteRabbitApp_Vertex;
+    using WhiteRabbitApp_ConstantBuffer;
 
     //创建窗口
     public class Windows : IDisposable
@@ -28,14 +29,14 @@ namespace WhiteRabbit_Windows
         private readonly Resource[] renderTargets = new Resource[FrameCount];//渲染目标视图
         private CommandAllocator commandAllocator;  //命令分配器
         private CommandAllocator bundleAllocator;
-        private CommandQueue commandQueue;          //命令队列
-        private DescriptorHeap renderTargetViewHeap;//描述符堆
+        private CommandQueue commandQueue;  //命令队列
+        private DescriptorHeap renderTargetViewHeap;    //描述符堆
+        private DescriptorHeap constantBufferViewHeap;  //常量缓冲区描述符堆
         private GraphicsCommandList commandList;    //命令列表
         private GraphicsCommandList bundle;
         private PipelineState pipelineState;    //管道状态
         private int rtvDescriptorSize;  //管道
         private RootSignature rootSignature;    //根签名
-        
 
         //同步对象
         private int width;
@@ -48,6 +49,9 @@ namespace WhiteRabbit_Windows
         //App资源
         Resource vertexBuffer;  //顶点缓冲区
         VertexBufferView vertexBufferView;  //顶点缓冲区视图
+        Resource constantBuffer;    //常量缓冲区
+        ConstantBuffer.ConstantBuffer1 constantBufferData;  //常量缓冲区数据
+        IntPtr constantBufferPointer;
 
         //初始化管道（渲染流水线）
         public void Initialize(RenderForm form)
@@ -59,8 +63,8 @@ namespace WhiteRabbit_Windows
         //创建设备
         private void LoadPipeline(RenderForm form)
         {
-            int width = form.ClientSize.Width;
-            int height = form.ClientSize.Height;
+            width = form.ClientSize.Width;
+            height = form.ClientSize.Height;
 
             //创建视口
             viewPort.Width = width;
@@ -112,15 +116,24 @@ namespace WhiteRabbit_Windows
             //描述并创建一个渲染目标视图（RTV）的描述符堆
             DescriptorHeapDescription rtvHeapDesc = new DescriptorHeapDescription()
             {
-                DescriptorCount = FrameCount,       //堆中的描述符数
+                DescriptorCount = FrameCount,   //堆中的描述符数
                 Flags = DescriptorHeapFlags.None,   //结果值指定符堆，None表示堆的默认用法
                 Type = DescriptorHeapType.RenderTargetView  //堆中的描述符类型
             };
-
             renderTargetViewHeap = device.CreateDescriptorHeap(rtvHeapDesc);
 
             //获取给定类型的描述符堆的句柄增量的大小，将句柄按正确的数量递增到描述符数组中
             rtvDescriptorSize = device.GetDescriptorHandleIncrementSize(DescriptorHeapType.RenderTargetView);
+
+            //描述并创建一个常量缓冲区视图（CBV）的描述符堆
+            //待到绘制物体时，只要将CBV绑定到存有物体相应常量数据的缓冲区子区域即可
+            var cbvHeapDesc = new DescriptorHeapDescription()
+            {
+                DescriptorCount = 1,    //堆中的描述符数
+                Flags = DescriptorHeapFlags.ShaderVisible,  //这里的参数指示该符堆被绑在命令列表上以供着色器参考
+                Type = DescriptorHeapType.ConstantBufferViewShaderResourceViewUnorderedAccessView
+            };
+            constantBufferViewHeap = device.CreateDescriptorHeap(cbvHeapDesc);
 
             //创建渲染目标视图
             //获取堆中起始的CPU描述符句柄，for循环为交换链中的每一个缓冲区都创建了一个RTV(渲染目标视图)
@@ -146,7 +159,19 @@ namespace WhiteRabbit_Windows
         {
             //创建一个空的根签名
             var rootSignatureDesc = new RootSignatureDescription(
-                RootSignatureFlags.AllowInputAssemblerInputLayout); //表示该根签名需要一组顶点缓冲区来绑定
+                RootSignatureFlags.AllowInputAssemblerInputLayout,
+                //根常量
+                new[] {
+                    new RootParameter(ShaderVisibility.Vertex,  //指定可以访问根签名绑定的内容的着色器，这里设置为顶点着色器
+                    new DescriptorRange()
+                    {
+                        RangeType = DescriptorRangeType.ConstantBufferView, //指定描述符范围，这里的参数是CBV
+                        BaseShaderRegister = 0, //指定描述符范围内的基本着色器
+                        OffsetInDescriptorsFromTableStart = int.MinValue,   //描述符从根签名开始的偏移量
+                        DescriptorCount = 1 //描述符范围内的描述符数
+                    })
+                }); 
+            //表示该根签名需要一组顶点缓冲区来绑定
             rootSignature = device.CreateRootSignature(rootSignatureDesc.Serialize());
 
             //创建流水线状态，负责编译和加载着色器
@@ -242,7 +267,7 @@ namespace WhiteRabbit_Windows
             vertexBufferView.BufferLocation = vertexBuffer.GPUVirtualAddress;
             vertexBufferView.StrideInBytes = Utilities.SizeOf<Vertex.Vertex1>();
             vertexBufferView.SizeInBytes = vertexBufferSize;
-            
+
             //创建bundle
             bundle = device.CreateCommandList(
                 0, 
@@ -255,13 +280,42 @@ namespace WhiteRabbit_Windows
             bundle.DrawInstanced(3, 1, 0, 0);
             bundle.Close();
 
+            //使用上传堆来传递常量缓冲区的数据
+            /*--------------------------------------------------*
+             * 不推荐使用上传堆来传递像垂直缓冲区这样的静态数据 *
+             * 这里使用上载堆是为了代码的简洁性，并且还因为需要 *
+             * 传递的资源很少                                   *
+             *--------------------------------------------------*/
+            constantBuffer = device.CreateCommittedResource(
+                new HeapProperties(HeapType.Upload),
+                HeapFlags.None,
+                ResourceDescription.Buffer(1024 * 64),
+                ResourceStates.GenericRead);
+
+            //描述并创建常量缓冲区视图（CBV）
+            var cbvDesc = new ConstantBufferViewDescription()
+            {
+                BufferLocation = constantBuffer.GPUVirtualAddress,
+                SizeInBytes = (Utilities.SizeOf<ConstantBuffer.ConstantBuffer1>() + 255) & ~255
+            };
+            device.CreateConstantBufferView(
+                cbvDesc, 
+                constantBufferViewHeap.CPUDescriptorHandleForHeapStart);
+
+            //初始化并映射常量缓冲区
+            /*--------------------------------------------------*
+             * 直到应用程序关闭，我们才会取消映射，因此在资源的 *
+             * 生命周期中保持映射是可以的                       *
+             *------------------------------------------------- */
+            constantBufferPointer = constantBuffer.Map(0);
+            Utilities.Write(constantBufferPointer, ref constantBufferData);
+
             //创建同步对象
             //创建围栏
             fence = device.CreateFence(
                 0,                  //围栏的初始值
                 FenceFlags.None);   //指定围栏的类型，None表示没有指定的类型
             fenceValue = 1;
-
             //创建用于帧同步的事件句柄
             fenceEvent = new AutoResetEvent(false);
         }
@@ -275,8 +329,24 @@ namespace WhiteRabbit_Windows
             //但是当在特定的命令列表上调用ExecuteCommandList()时，可以随时重置该命令列表，并且必须在此之前重新写入
             commandList.Reset(commandAllocator, pipelineState);
 
-            //设置根签名布局、视口和裁剪矩形
+            //设置描述符堆
+            //更改与命令列表相关联的当前绑定的描述符堆
+            commandList.SetDescriptorHeaps(
+                1,  //要绑定的描述符堆的数量
+                new DescriptorHeap[]
+                {
+                    constantBufferViewHeap
+                }); //指向要在命令列表上设置的堆的对象的指针
+
+            //设置根签名布局
             commandList.SetGraphicsRootSignature(rootSignature);
+
+            //为描述符表设置图形根签名
+            commandList.SetGraphicsRootDescriptorTable(
+                0,  //用于绑定的符堆序号
+                constantBufferViewHeap.GPUDescriptorHandleForHeapStart);    //用于设置基本描述符的GPU_descriptor_handle对象
+
+            //设置视口和裁剪矩形
             commandList.SetViewport(viewPort);
             commandList.SetScissorRectangles(scissorRectangle);
 
@@ -295,6 +365,7 @@ namespace WhiteRabbit_Windows
             //写入命令
             commandList.ClearRenderTargetView(rtvHandle, new Color4(1.0f, 1.0f, 1.0f, 1.0f), 0, null);
 
+            //执行bundle
             commandList.ExecuteBundle(bundle);
 
             //使用返回缓冲区
@@ -331,7 +402,15 @@ namespace WhiteRabbit_Windows
 
         public void Update()
         {
+            const float translationSpeed = 0.005f;
+            const float offsetBounds = 1.25f;
 
+            constantBufferData.Offset.X += translationSpeed;
+            if (constantBufferData.Offset.X > offsetBounds)
+            {
+                constantBufferData.Offset.X = -offsetBounds;
+            }
+            Utilities.Write(constantBufferPointer, ref constantBufferData);
         }
 
         public void Render()
@@ -366,7 +445,9 @@ namespace WhiteRabbit_Windows
             rootSignature.Dispose();
             pipelineState.Dispose();
             vertexBuffer.Dispose();
+            constantBuffer.Dispose();
             renderTargetViewHeap.Dispose();
+            constantBufferViewHeap.Dispose();
             commandList.Dispose();
             bundle.Dispose();
             fence.Dispose();
