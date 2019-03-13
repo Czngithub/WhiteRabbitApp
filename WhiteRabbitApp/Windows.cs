@@ -23,6 +23,10 @@ namespace WhiteRabbit_Windows
         private ViewportF viewPort;  //视口
         private Rectangle scissorRectangle;  //裁剪矩形
 
+        //设置视锥体空间
+        private Matrix view;
+        private Matrix proj;
+
         //管道（渲染流水线）对象
         private Device device;       //设备
         private SwapChain3 swapChain;//交换链
@@ -51,6 +55,8 @@ namespace WhiteRabbit_Windows
         VertexBufferView vertexBufferView;  //顶点缓冲区视图
         Resource constantBuffer;    //常量缓冲区
         ConstantBuffer.ConstantBuffer1 constantBufferData;  //常量缓冲区数据
+        Resource indexBuffer;   //索引缓冲区
+        IndexBufferView indexBufferView;    //索引缓冲区视图
         IntPtr constantBufferPointer;
 
         //初始化管道（渲染流水线）
@@ -67,13 +73,11 @@ namespace WhiteRabbit_Windows
             height = form.ClientSize.Height;
 
             //创建视口
-            viewPort.Width = width;
-            viewPort.Height = height;
+            viewPort = new ViewportF(0, 0, width, height);
             viewPort.MaxDepth = 1.0f;
 
             //创建裁剪矩形
-            scissorRectangle.Width = width;
-            scissorRectangle.Bottom = height;
+            scissorRectangle = new Rectangle(0, 0, width, height);
 
 #if DEBUG
             //启用调试层
@@ -170,28 +174,28 @@ namespace WhiteRabbit_Windows
                         OffsetInDescriptorsFromTableStart = int.MinValue,   //描述符从根签名开始的偏移量
                         DescriptorCount = 1 //描述符范围内的描述符数
                     })
-                }); 
+                });
             //表示该根签名需要一组顶点缓冲区来绑定
             rootSignature = device.CreateRootSignature(rootSignatureDesc.Serialize());
 
             //创建流水线状态，负责编译和加载着色器
 #if DEBUG
-            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VSMain", "vs_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
+            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VS", "vs_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
 #else
-            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VSMain", "vs_5_0"));
+            var vertexShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "VS", "vs_5_0"));
 #endif
 
 #if DEBUG
-            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PSMain", "ps_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
+            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PS", "ps_5_0", SharpDX.D3DCompiler.ShaderFlags.Debug));
 #else
-            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PSMain", "ps_5_0"));
+            var pixelShader = new ShaderBytecode(SharpDX.D3DCompiler.ShaderBytecode.CompileFromFile("shaders.hlsl", "PS", "ps_5_0"));
 #endif
 
             //描述输入装配器阶段的输入元素，这里定义顶点输入布局
-            var inputElementDescs = new []
+            var inputElementDescs = new[]
             {
-                new InputElement("POSITION", 0, Format.R32G32B32_Float, 0, 0),
-                new InputElement("COLOR", 0, Format.R32G32B32A32_Float, 12, 0) 
+                new InputElement("POSITION", 0, Format.R32G32B32A32_Float, 0, 0),
+                new InputElement("COLOR", 0, Format.R32G32B32A32_Float, 16, 0)
             };
 
             //描述和创建流水线状态对象（PSO）
@@ -229,31 +233,71 @@ namespace WhiteRabbit_Windows
 
             commandList.Close();
 
-            //创建顶点缓冲区
             float aspectRatio = viewPort.Width / viewPort.Height;
 
-            //定义三角形的几何形状
-            var triangleVertices = new []
+            //定义待绘制图形的几何形状
+            var triangleVertices = new[]
             {
-                new Vertex.Vertex1() {Position = new Vector3(0.0f, 0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
-                new Vertex.Vertex1() {Position = new Vector3(0.25f, -0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
-                new Vertex.Vertex1() {Position = new Vector3(-0.25f, -0.25f * aspectRatio, 0.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(-0.1f, -0.1f, -0.1f, 1.0f),Color = new Vector4(1.0f, 0.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(-0.1f, +0.1f, -0.1f, 1.0f),Color = new Vector4(0.0f, 1.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(+0.1f, +0.1f, -0.1f, 1.0f),Color = new Vector4(0.0f, 0.0f, 0.1f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(+0.1f, -0.1f, -0.1f, 1.0f),Color = new Vector4(1.0f, 1.0f, 0.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(-0.1f, -0.1f, +0.1f, 1.0f),Color = new Vector4(1.0f, 0.0f, 1.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(-0.1f, +0.1f, +0.1f, 1.0f),Color = new Vector4(0.0f, 1.0f, 1.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(+0.1f, +0.1f, +0.1f, 1.0f),Color = new Vector4(1.0f, 1.0f, 1.0f, 1.0f) },
+                new Vertex.Vertex1() {Position = new Vector4(+0.1f, -0.1f, +0.1f, 1.0f),Color = new Vector4(0.0f, 0.0f, 0.0f, 1.0f) },
             };
 
-            //使用上传堆来传递垂直缓冲区的数据
+            //创建待绘制图形的顶点索引
+            var triangleIndexVertices = new[]
+            {
+                0, 1, 2,
+                0, 2, 3,
+                4, 6, 5,
+                4, 7, 6,
+                4, 5, 1,
+                4, 1, 0,
+                3, 2, 6,
+                3, 6, 7,
+                1, 5, 6,
+                1, 6, 2,
+                4, 0, 3,
+                4, 3, 7,
+            };
+
+            //创建视锥体
+            //创建左手观察矩阵
+            view = Matrix.LookAtLH(
+                new Vector3(-1, -1, -1), //摄像机原点
+                new Vector3(0, 0, 0),  //摄像机观察目标点
+                Vector3.UnitY);    //当前世界的向上方向的向量，通常为（0,1,0），即这里的UnitY参数
+            //创建一个基于视野的构建左手透视投影矩阵
+            proj = Matrix.Identity;
+            proj = Matrix.PerspectiveFovLH(
+                (float)Math.PI / 4.0f,  //用弧度制表示垂直视场角，这里是45°角
+                aspectRatio,   //纵横比
+                0.1f,   //到近平面的距离
+                100.0f  //到远平面的距离
+                );
+            var viewProj = Matrix.Multiply(view, proj); //返回两个指定矩阵的乘积
+            var worldViewProj = Matrix.Scaling(1.0f) * Matrix.RotationX(0.5f) * Matrix.RotationY(0.5f) * Matrix.RotationZ(0.5f) * viewProj;
+            //返回给定矩阵的转置矩阵
+            worldViewProj.Transpose();
+
+            //使用上传堆来传递顶点缓冲区的数据
             /*--------------------------------------------------*
-             * 不推荐使用上传堆来传递像垂直缓冲区这样的静态数据 *
+             * 不推荐使用上传堆来传递像顶点缓冲区这样的静态数据 *
              * 这里使用上载堆是为了代码的简洁性，并且还因为需要 *
              * 传递的资源很少                                   *
              *--------------------------------------------------*/
-            int vertexBufferSize = Utilities.SizeOf(triangleVertices);
+            var vertexBufferSize = Utilities.SizeOf(triangleVertices);
             vertexBuffer = device.CreateCommittedResource(
                 new HeapProperties(HeapType.Upload),
                 HeapFlags.None,
                 ResourceDescription.Buffer(vertexBufferSize),
                 ResourceStates.GenericRead);
 
-            //将三角形的数据复制到顶点缓冲区
+            //将顶点的数据复制到顶点缓冲区
             IntPtr pVertexDataBegin = vertexBuffer.Map(0);
             Utilities.Write(
                 pVertexDataBegin,
@@ -268,16 +312,52 @@ namespace WhiteRabbit_Windows
             vertexBufferView.StrideInBytes = Utilities.SizeOf<Vertex.Vertex1>();
             vertexBufferView.SizeInBytes = vertexBufferSize;
 
+            //使用上传堆来传递索引缓冲区的数据
+            int indexBufferSize = Utilities.SizeOf(triangleIndexVertices);
+            indexBuffer = device.CreateCommittedResource(
+                new HeapProperties(HeapType.Upload),
+                HeapFlags.None,
+                ResourceDescription.Buffer(indexBufferSize),
+                ResourceStates.GenericRead);
+
+            //将索引的数据复制到索引缓冲区
+            IntPtr pIndexDataBegin = indexBuffer.Map(0);
+            Utilities.Write(
+                pIndexDataBegin,
+                triangleIndexVertices,
+                0,
+                triangleIndexVertices.Length);
+            indexBuffer.Unmap(0);
+
+            //初始化索引缓冲区视图
+            indexBufferView = new IndexBufferView();
+            indexBufferView.BufferLocation = indexBuffer.GPUVirtualAddress;
+            indexBufferView.SizeInBytes = indexBufferSize;
+            indexBufferView.Format = Format.R32_UInt;
+
             //创建bundle
             bundle = device.CreateCommandList(
-                0, 
-                CommandListType.Bundle, 
+                0,
+                CommandListType.Bundle,
                 bundleAllocator,
                 pipelineState);
             bundle.SetGraphicsRootSignature(rootSignature);
             bundle.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
             bundle.SetVertexBuffer(0, vertexBufferView);
-            bundle.DrawInstanced(3, 1, 0, 0);
+            bundle.SetIndexBuffer(indexBufferView);
+
+            //bundle.DrawInstanced(
+            //    triangleVertices.Length, //VertexCountPerInstance,要绘制的顶点数
+            //    1,  //InstanceCount，要绘制的实例数，这里是1个
+            //    0,  //StartVertexLocation，第一个顶点的索引，这里是0
+            //    0); //StartInstanceLocation，在从顶点缓冲区读取每个实例数据之前添加到每个索引的值
+
+            bundle.DrawIndexedInstanced(
+                triangleIndexVertices.Length, //IndexCountPerInstance,要绘制的索引数
+                1,  //InstanceCount，要绘制的实例数，这里是1个
+                0,  //StartIndexLocation，第一个顶点的索引，这里是0
+                0,  //BaseVertexLocation,,从顶点缓冲区读取顶点之前添加到每个索引的值
+                0); //StartInstanceLocation，在从顶点缓冲区读取每个实例数据之前添加到每个索引的值
             bundle.Close();
 
             //使用上传堆来传递常量缓冲区的数据
@@ -299,7 +379,7 @@ namespace WhiteRabbit_Windows
                 SizeInBytes = (Utilities.SizeOf<ConstantBuffer.ConstantBuffer1>() + 255) & ~255
             };
             device.CreateConstantBufferView(
-                cbvDesc, 
+                cbvDesc,
                 constantBufferViewHeap.CPUDescriptorHandleForHeapStart);
 
             //初始化并映射常量缓冲区
@@ -308,7 +388,7 @@ namespace WhiteRabbit_Windows
              * 生命周期中保持映射是可以的                       *
              *------------------------------------------------- */
             constantBufferPointer = constantBuffer.Map(0);
-            Utilities.Write(constantBufferPointer, ref constantBufferData);
+            Utilities.Write(constantBufferPointer, ref worldViewProj);
 
             //创建同步对象
             //创建围栏
@@ -329,6 +409,9 @@ namespace WhiteRabbit_Windows
             //但是当在特定的命令列表上调用ExecuteCommandList()时，可以随时重置该命令列表，并且必须在此之前重新写入
             commandList.Reset(commandAllocator, pipelineState);
 
+            //设置根签名布局
+            commandList.SetGraphicsRootSignature(rootSignature);
+
             //设置描述符堆
             //更改与命令列表相关联的当前绑定的描述符堆
             commandList.SetDescriptorHeaps(
@@ -337,9 +420,6 @@ namespace WhiteRabbit_Windows
                 {
                     constantBufferViewHeap
                 }); //指向要在命令列表上设置的堆的对象的指针
-
-            //设置根签名布局
-            commandList.SetGraphicsRootSignature(rootSignature);
 
             //为描述符表设置图形根签名
             commandList.SetGraphicsRootDescriptorTable(
@@ -363,7 +443,7 @@ namespace WhiteRabbit_Windows
             commandList.SetRenderTargets(rtvHandle, null);
 
             //写入命令
-            commandList.ClearRenderTargetView(rtvHandle, new Color4(1.0f, 1.0f, 1.0f, 1.0f), 0, null);
+            commandList.ClearRenderTargetView(rtvHandle, new Color4(1.0f, 1.0f, 1.0f, 1), 0, null);
 
             //执行bundle
             commandList.ExecuteBundle(bundle);
@@ -402,15 +482,7 @@ namespace WhiteRabbit_Windows
 
         public void Update()
         {
-            const float translationSpeed = 0.005f;
-            const float offsetBounds = 1.25f;
 
-            constantBufferData.Offset.X += translationSpeed;
-            if (constantBufferData.Offset.X > offsetBounds)
-            {
-                constantBufferData.Offset.X = -offsetBounds;
-            }
-            Utilities.Write(constantBufferPointer, ref constantBufferData);
         }
 
         public void Render()
@@ -445,6 +517,7 @@ namespace WhiteRabbit_Windows
             rootSignature.Dispose();
             pipelineState.Dispose();
             vertexBuffer.Dispose();
+            indexBuffer.Dispose();
             constantBuffer.Dispose();
             renderTargetViewHeap.Dispose();
             constantBufferViewHeap.Dispose();

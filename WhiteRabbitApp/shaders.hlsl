@@ -1,20 +1,28 @@
-﻿struct PSInput
+﻿struct VS_IN
 {
-	float4 position : SV_POSITION;
-	float4 color : COLOR;
+	float4 pos : POSITION;
+	float4 col : COLOR;
 };
 
-PSInput VSMain(float4 position : POSITION, float4 color : COLOR)
+struct PS_IN
 {
-	PSInput result;
+	float4 pos : SV_POSITION;
+	float4 col : COLOR;
+};
 
-	result.position = position;
-	result.color = color;
+float4x4 WorldViewProj;
 
-	return result;
+PS_IN VS(VS_IN input)
+{
+	PS_IN output = (PS_IN)0;
+
+	output.pos = mul(input.pos, WorldViewProj);
+	output.col = input.col;
+
+	return output;
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+float4 PS(PS_IN input) : SV_Target
 {
-	return input.color;
+	return input.col;
 }

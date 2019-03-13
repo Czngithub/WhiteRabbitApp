@@ -17,7 +17,7 @@ namespace WhiteRabbit_Program
             {
                 Width = 1280,
                 Height = 800
-                
+
             };
             //窗口显示
             form.Show();
